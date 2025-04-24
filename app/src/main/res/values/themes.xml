@@ -1,0 +1,10 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Theme.YLVoiceWakeup" parent="Theme.AppCompat.NoActionBar">
+        <!-- Customize your light theme here. -->
+        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+        <item name="colorPrimary">#4682B4</item>
+        <item name="colorPrimaryDark">#4682B4</item>
+        <item name="colorAccent">#4682B4</item>
+    </style>
+</resources>

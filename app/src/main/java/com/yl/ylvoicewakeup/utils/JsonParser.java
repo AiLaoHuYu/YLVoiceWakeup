@@ -1,0 +1,37 @@
+package com.yl.ylvoicewakeup.utils;
+
+
+import android.util.Log;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.json.JSONTokener;
+
+/**
+ * Json结果解析类
+ */
+public class JsonParser {
+
+    public static String parseIatResult(String json) {
+        StringBuffer ret = new StringBuffer();
+        try {
+            Log.d("json", "parseIatResult: "+json);
+            JSONTokener tokener = new JSONTokener(json);
+            Log.d("tokener", "parseIatResult: "+tokener);
+
+            JSONObject joResult = new JSONObject(tokener);
+            Log.d("joResult", "parseIatResult: "+joResult);
+
+            JSONArray words = joResult.getJSONArray("ws");
+            for (int i = 0; i < words.length(); i++) {
+                // 转写结果词，默认使用第一个结果
+                JSONArray items = words.getJSONObject(i).getJSONArray("cw");
+                JSONObject obj = items.getJSONObject(0);
+                ret.append(obj.getString("w"));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return ret.toString();
+    }
+}

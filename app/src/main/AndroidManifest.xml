@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.yl.ylvoicewakeup"
+    android:sharedUserId="android.uid.system">
+    <!-- 连接网络权限，用于执行云端语 ·音能力 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- 声明接收开机广播的权限 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <protected-broadcast android:name="com.yl.voice.wakeup" />
+    <protected-broadcast android:name="com.yl.deepseek.start.wakeup" />
+    <protected-broadcast android:name="com.yl.deepseek.stop.wakeup" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.YLVoiceWakeup"
+        tools:targetApi="31">
+        <receiver
+            android:name=".receiver.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </receiver>
+        <service
+            android:name=".service.VoiceWakeupService"
+            android:enabled="true"
+            android:exported="true" />
+    </application>
+
+</manifest>
