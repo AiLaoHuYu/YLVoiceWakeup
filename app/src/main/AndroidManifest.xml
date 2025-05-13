@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- 请求提供方应用定义的权限 -->
+    <uses-permission android:name="com.example.READ_DATABASE" />
+    <uses-permission android:name="com.example.WRITE_DATABASE" />
     <!-- 声明接收开机广播的权限 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
@@ -32,6 +35,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </receiver>
+        <receiver
+            android:name=".receiver.CreteFilesBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.yl.deepseekxunfei.cretemodule.CUSTOM_ACTION" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".service.VoiceWakeupService"
             android:enabled="true"

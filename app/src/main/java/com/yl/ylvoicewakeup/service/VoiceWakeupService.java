@@ -6,6 +6,7 @@ import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
@@ -14,6 +15,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.RemoteException;
+import android.service.credentials.CreateEntry;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.Gravity;
@@ -41,14 +44,32 @@ import com.iflytek.cloud.VoiceWakeuper;
 import com.iflytek.cloud.WakeuperListener;
 import com.iflytek.cloud.WakeuperResult;
 import com.iflytek.cloud.util.ResourceUtil;
+
+import com.yl.creteEntity.crete.roomCrete.entity.creteEntity;
+import com.yl.creteEntity.crete.roomCrete.entity.roomDIal;
 import com.yl.ylvoicewakeup.R;
+import com.yl.ylvoicewakeup.creteVoice.CreateLogotype;
+import com.yl.ylvoicewakeup.creteVoice.QueryFeatureList;
+import com.yl.ylvoicewakeup.creteVoice.SearchFeature;
+import com.yl.ylvoicewakeup.creteVoice.SearchOneFeature;
 import com.yl.ylvoicewakeup.utils.AnimatorUtil;
 import com.yl.ylvoicewakeup.utils.CommonUtil;
+import com.yl.ylvoicewakeup.utils.CreteUtlis;
 import com.yl.ylvoicewakeup.utils.JsonParser;
+import com.yl.ylvoicewakeup.utils.PcmUtils;
 import com.yl.ylvoicewakeup.utils.SystemPropertiesReflection;
+import com.yl.ylvoicewakeup.utils.TenSecondsOfAudio;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class VoiceWakeupService extends Service {
 
@@ -59,7 +80,7 @@ public class VoiceWakeupService extends Service {
     private SpeechSynthesizer mTts;
     private String keep_alive = "1";
     private String ivwNetMode = "0";
-    private final String APP_ID = "dac98629";
+    private final String APP_ID = "c7af7320";
     private String mEngineType = SpeechConstant.TYPE_CLOUD;// 引擎类型
     private WindowManager mWindowManager;
     private WindowManager.LayoutParams wmParams;
@@ -77,12 +98,41 @@ public class VoiceWakeupService extends Service {
     private final static String ACTION = "com.yl.voice.wakeup";
     private ContentValues mIatResults = new ContentValues();
     private SharedPreferences mSharedPreferences;//缓存
+    //初始话科大讯飞声纹识别
+    private String CreateAPP_ID;
+    private String CreateAPISecret;
+    private String CreateAPIKey;
+    private String CreateRequestUrl;
+    //声纹识别所需文件保存路径
+    private String creteFlies;
+    //对比声纹文件
+    private String contrastFies;
+    //全局声纹识别创建文件工具类
+    private CreteUtlis creteUtlis = new CreteUtlis();
+    //声纹识别标识参数设置
+    private CreateLogotype createLogotype = new CreateLogotype();
+    final Map<String, String>[] SearchOneFeatureList = new Map[]{new HashMap<>()}; //1:1服务结果
+    final Map<String, String>[] result = new Map[]{new HashMap<>()};//1:N服务结果
+    final Map<String, String>[] group = new Map[]{new HashMap<>()};//创建特征库服务结果
+    final Map<String, String>[] querySelect = new Map[]{new HashMap<>()};//查询结果
+    List<String> groupIdList = new ArrayList<>();//分组标识
+    List<String> groupNameList = new ArrayList<>();//声纹分组名称
+    List<String> groupInfoLsit = new ArrayList<>();//分组描述信息
+    List<String> featureIdList = new ArrayList<>();//特征唯一标识
+    List<String> featureInfoList = new ArrayList<>();//特征描述
+    public boolean fig = true;//返回判断是否注册声纹结果
+    private boolean mttsFig = false;
+    private roomDIal roomDIal;
+    public TenSecondsOfAudio tenSecondsOfAudio;
+    public PcmUtils pcmUtils;
+    public ServiceConnection mConnection;
+
 
     @Override
     public void onCreate() {
         super.onCreate();
         //  开放平台注册的APPID
-        SpeechUtility.createUtility(getApplication(), SpeechConstant.APPID + "=dac98629");
+        SpeechUtility.createUtility(getApplication(), SpeechConstant.APPID + "=c7af7320");
         // 初始化唤醒对象
         mIvw = VoiceWakeuper.createWakeuper(this, null);
         mIat = SpeechRecognizer.createRecognizer(this, mInitListener);
@@ -90,10 +140,38 @@ public class VoiceWakeupService extends Service {
         mSharedPreferences = getSharedPreferences("ASR", Activity.MODE_PRIVATE);
         animatorUtil = new AnimatorUtil();
         mHandler = new Handler(Looper.getMainLooper());
+        mConnection  = new ServiceConnection() {
+            @Override
+            public void onServiceConnected(ComponentName name, IBinder service) {
+                roomDIal = com.yl.creteEntity.crete.roomCrete.entity.roomDIal.Stub.asInterface(service);
+                Log.d(TAG, "onServiceConnected: 已连接");
+            }
+
+            @Override
+            public void onServiceDisconnected(ComponentName name) {
+                roomDIal = null;
+                Log.d(TAG, "onServiceConnected: 断开连接");
+            }
+        };
+        Intent intent = new Intent();
+        //Android现在对隐式意图管理严格，除了要setAction包名也需要设置，这里包名是服务端app的包名
+        intent.setAction("com.example.testapp.aidl");
+        intent.setPackage("com.yl.deepseekxunfei");
+        //绑定服务
+        bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
+        tenSecondsOfAudio = new TenSecondsOfAudio(VoiceWakeupService.this);
+        tenSecondsOfAudio.startRecording();
+        pcmUtils = new PcmUtils();
+        Log.d(TAG, "onCreate: "+mConnection);
         initWindow();
     }
 
     private void initWindow() {
+        //初始话声纹识别必须参数
+        CreateAPP_ID = "27b3a946";
+        CreateAPISecret = "MGNhOTM2Yjg3MmVhMTFjYzhhODQzMTYw";
+        CreateAPIKey = "06224092793087296b1f47c96e0133bc";
+        CreateRequestUrl = "https://api.xf-yun.com/v1/private/s782b4996";
         mWindowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
         wmParams = new WindowManager.LayoutParams();
         wmParams.type = WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY;
@@ -154,6 +232,7 @@ public class VoiceWakeupService extends Service {
             if ("com.yl.deepseekxunfei".equals(CommonUtil.getForegroundActivity(getApplicationContext()))) {
                 sendBroadCast(ACTION);
             } else {
+                mttsFig = false;
                 mTts.startSpeaking("我在，请问有什么吩咐", mSynthesizerListener);
                 LayoutInflater inflater = LayoutInflater.from(getApplicationContext());
                 mFloatingLayout = inflater.inflate(R.layout.voice_layout, null);
@@ -161,6 +240,72 @@ public class VoiceWakeupService extends Service {
                 voiceImg = mFloatingLayout.findViewById(R.id.voice_img);
                 voiceText = mFloatingLayout.findViewById(R.id.voice_text);
                 mWindowManager.addView(mFloatingLayout, wmParams);
+//                Log.d(TAG, "onCreate: "+mConnection);
+//                if (roomDIal != null) {
+//                    try {
+//                        List<creteEntity> creteEntityList = roomDIal.listRoom();
+//                        Log.d(TAG, "roomDIal: " + creteEntityList.toString());
+//                        for (creteEntity c : creteEntityList) {
+//                            groupIdList.add(c.getGroupId());
+//                            groupNameList.add(c.getGroupName());
+//                            groupInfoLsit.add(c.getGroupInfo());
+//                            featureIdList.add(c.getFeatureId());
+//                            featureInfoList.add(c.getFeatureInfo());
+//
+//                            createLogotype.setGroupId(groupIdList);
+//                            createLogotype.setGroupName(groupNameList);
+//                            createLogotype.setGroupInfo(groupInfoLsit);
+//                            createLogotype.setFeatureId(featureIdList);
+//                            createLogotype.setFeatureInfo(featureInfoList);
+//                        }
+//                        //判断是否有声纹信息
+//                        if (seleteCrete()) {
+//                            //对比声纹文件new WeakReference<>(this)
+//                            byte[] last10Seconds = tenSecondsOfAudio.getLast5Seconds();
+//                            // 处理音频数据（如保存为WAV或上传服务器）
+//                            String flies = pcmUtils.savePcmToFile(last10Seconds, VoiceWakeupService.this.getExternalFilesDir("pcm"), "duibi.pcm");
+//                            if (flies != null) {
+//                                contrastFies = flies;
+//                            }
+//                            if (!createFig()) {
+//                                mttsFig = false;
+//                                mTts.startSpeaking("我在，请问有什么吩咐", mSynthesizerListener);
+//                                LayoutInflater inflater = LayoutInflater.from(getApplicationContext());
+//                                mFloatingLayout = inflater.inflate(R.layout.voice_layout, null);
+//                                mFloatingLayout.setBackgroundResource(R.drawable.voice_bg);
+//                                voiceImg = mFloatingLayout.findViewById(R.id.voice_img);
+//                                voiceText = mFloatingLayout.findViewById(R.id.voice_text);
+//                                mWindowManager.addView(mFloatingLayout, wmParams);
+//                            } else {
+//                                mttsFig = true;
+//                                mTts.startSpeaking("声纹验证失败，请重试！", mSynthesizerListener);
+//                                LayoutInflater inflater = LayoutInflater.from(getApplicationContext());
+//                                mFloatingLayout = inflater.inflate(R.layout.voice_layout, null);
+//                                mFloatingLayout.setBackgroundResource(R.drawable.voice_bg);
+//                                voiceImg = mFloatingLayout.findViewById(R.id.voice_img);
+//                                voiceText = mFloatingLayout.findViewById(R.id.voice_text);
+//                                voiceText.setText("声纹验证失败，请重试");
+//                                mWindowManager.addView(mFloatingLayout, wmParams);
+//                                isHideView = true;
+//                            }
+//                        } else {
+//                            mttsFig = true;
+//                            mTts.startSpeaking("暂无声纹信息，请注册", mSynthesizerListener);
+//                            LayoutInflater inflater = LayoutInflater.from(getApplicationContext());
+//                            mFloatingLayout = inflater.inflate(R.layout.voice_layout, null);
+//                            mFloatingLayout.setBackgroundResource(R.drawable.voice_bg);
+//                            voiceImg = mFloatingLayout.findViewById(R.id.voice_img);
+//                            voiceText = mFloatingLayout.findViewById(R.id.voice_text);
+//                            voiceText.setText("暂无声纹信息，请注册");
+//                            mWindowManager.addView(mFloatingLayout, wmParams);
+//                            isHideView = true;
+//                        }
+//                    } catch (RemoteException e) {
+//                        throw new RuntimeException(e);
+//                    }
+//                } else {
+//                    Log.d(TAG, "roomDIal: " + roomDIal);
+//                }
             }
         }
 
@@ -204,9 +349,10 @@ public class VoiceWakeupService extends Service {
             mIvw.cancel();
             mIvw.destroy();
         }
+        unbindService(mConnection);
         super.onDestroy();
-    }
 
+    }
 
     private void initXunFei() {
         //初始化识别无UI识别对象
@@ -252,8 +398,9 @@ public class VoiceWakeupService extends Service {
             // 设置唤醒资源路径
             mIvw.setParameter(SpeechConstant.IVW_RES_PATH, getResource());
             // 设置唤醒录音保存路径，保存最近一分钟的音频
-            mIvw.setParameter(SpeechConstant.IVW_AUDIO_PATH,
-                    getExternalFilesDir("msc").getAbsolutePath() + "/ivw.wav");
+            String ivwPath = getExternalFilesDir("msc").getAbsolutePath() + "/ivw.wav";
+            Log.d("IVW_PATH", "唤醒音频保存路径: " + ivwPath);
+            mIvw.setParameter(SpeechConstant.IVW_AUDIO_PATH, ivwPath);
             mIvw.setParameter(SpeechConstant.AUDIO_FORMAT, "wav");
             // 如有需要，设置 NOTIFY_RECORD_DATA 以实时通过 onEvent 返回录音音频流字节
             //mIvw.setParameter( SpeechConstant.NOTIFY_RECORD_DATA, "1" );
@@ -265,7 +412,7 @@ public class VoiceWakeupService extends Service {
             showTip("唤醒未初始化");
         }
         String deepseekVoiceSpeed = SystemPropertiesReflection.get("deepseek_voice_speed", "50");
-        String deepseekVoicespeaker = SystemPropertiesReflection.get("deepseek_voice_speaker", "xiaoyan");
+        String deepseekVoicespeaker = SystemPropertiesReflection.get("deepseek_voice_speaker", "aisjiuxu");
         if (deepseekVoicespeaker.equals("许久")) {
             deepseekVoicespeaker = "aisjiuxu";
         } else if (deepseekVoicespeaker.equals("小萍")) {
@@ -377,9 +524,22 @@ public class VoiceWakeupService extends Service {
                         }
                     }
                 } else {
-                    voiceText.setText("未识别到文字，请稍后尝试");
-                    mTts.startSpeaking("未识别到文字，请稍后尝试", mSynthesizerListener);
-                    isHideView = true;
+                    if (!mttsFig) {
+                        voiceText.setText("未识别到文字，请稍后尝试");
+                        mTts.startSpeaking("未识别到文字，请稍后尝试", mSynthesizerListener);
+                        isHideView = true;
+                    } else {
+                        // 延迟3秒后移除悬浮窗
+                        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (mFloatingLayout != null && mFloatingLayout.isAttachedToWindow()) {
+                                    mWindowManager.removeView(mFloatingLayout);
+                                }
+                            }
+                        }, 3000);
+                        isHideView = true;
+                    }
                 }
             }
         }
@@ -455,4 +615,95 @@ public class VoiceWakeupService extends Service {
         return resPath;
     }
 
+    //判断是否已注册声纹
+    public boolean createFig() {
+        if (createLogotype.getGroupId() != null) {
+            Log.d(TAG, "roomDial: "+createLogotype.getGroupId().size());
+            Log.d(TAG, "roomDial: "+createLogotype.getGroupId());
+            if (createLogotype.getGroupId().size() > 1) {
+                for (int j = 0; j < createLogotype.getGroupId().size(); j++) {
+                    result[0] = SearchFeature.doSearchFeature(CreateRequestUrl, CreateAPP_ID, CreateAPISecret, CreateAPIKey, contrastFies, createLogotype, createLogotype.getGroupId().get(j));//1:N比对
+                    if (result[0] != null) {
+                        if (result[0].get("score") != null) {
+                            if (Double.parseDouble(Objects.requireNonNull(result[0].get("score"))) >= 0.35) {
+                                fig = false;
+                                break;
+                            }
+                        } else {
+                            showTip("音频数据无效，请稍后再试");
+                        }
+                    } else {
+                        showTip("没有匹配的声纹信息，请注册1：N");
+                        fig = true;
+                    }
+                }
+            } else if (createLogotype.getGroupId().size() == 1) {
+                for (int j = 0; j < createLogotype.getGroupId().size(); j++) {
+                    for (int k = 0; k < createLogotype.getFeatureId().size(); k++) {
+                        SearchOneFeatureList[0] = SearchOneFeature.doSearchOneFeature(CreateRequestUrl, CreateAPP_ID, CreateAPISecret, CreateAPIKey, contrastFies, createLogotype, createLogotype.getGroupId().get(j), createLogotype.getFeatureId().get(k));//1:1
+                        if (SearchOneFeatureList[0] != null && SearchOneFeatureList[0].get("score") != null) {
+                            if (Double.parseDouble(Objects.requireNonNull(SearchOneFeatureList[0].get("score"))) >= 0.35) {
+                                fig = false;
+                            }
+                        } else {
+                            showTip("没有匹配的声纹信息，请注册1:1");
+                            fig = true;
+                        }
+                    }
+                }
+            }
+        } else {
+            showTip("请先注册声纹信息");
+            fig = true;
+        }
+        createLogotype.clear();
+        return fig;
+    }
+
+    public boolean seleteCrete() {
+        // 检查groupId是否存在
+        if (createLogotype.getGroupId() != null && !createLogotype.getGroupId().isEmpty()) {
+            // 用于存储所有结果的列表
+            final List<JSONObject> allResults = new ArrayList<>();
+            // 记录groupId总数和已完成的查询数
+            final int totalGroups = createLogotype.getGroupId().size();
+            final AtomicInteger completedGroups = new AtomicInteger(0);
+
+            // 遍历所有groupId进行查询
+            for (int j = 0; j < totalGroups; j++) {
+                final String groupId = createLogotype.getGroupId().get(j);
+                QueryFeatureList.doQueryFeatureList(CreateRequestUrl, CreateAPP_ID, CreateAPISecret, CreateAPIKey, createLogotype, groupId,
+                        new QueryFeatureList.NetCall() {
+                            @Override
+                            public void OnSuccess(String success) {
+                                try {
+                                    JSONArray jsonArray = new JSONArray(success);
+                                    // 将当前groupId的结果添加到总结果列表
+                                    for (int i = 0; i < jsonArray.length(); i++) {
+                                        JSONObject item = jsonArray.getJSONObject(i);
+                                        item.put("groupId", groupId); // 保存groupId到结果中
+                                        allResults.add(item);
+                                    }
+                                } catch (JSONException e) {
+                                    Log.e(TAG, "解析JSON失败", e);
+                                }
+                            }
+
+                            @Override
+                            public void OnError() {
+                                // 即使部分查询失败，也继续处理已有的结果
+                                if (completedGroups.incrementAndGet() == totalGroups) {
+
+                                }
+                            }
+                        });
+                Log.d(TAG, "seleteCrete: " + createLogotype);
+            }
+            return true;
+        } else {
+            Log.d(TAG, "seleteCrete: 暂无声纹信息");
+            showTip("暂无声纹信息！");
+            return false;
+        }
+    }
 }
