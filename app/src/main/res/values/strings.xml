@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">YLVoiceWakeup</string>
+    <string name="appId">44a41084</string>
+    <string name="apiSecret">OGU1YzZhOThjOGM0YmUzNzk2ZWZmOTkx</string>
+    <string name="apiKey">1c899ca6e4c3bc45291caca2ae535402</string>
+    <string name="workDir">/sdcard/iflytek/</string>
 </resources>

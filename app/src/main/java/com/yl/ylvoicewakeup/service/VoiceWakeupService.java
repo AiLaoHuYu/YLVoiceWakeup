@@ -2,69 +2,85 @@ package com.yl.ylvoicewakeup.service;
 
 import android.app.Activity;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
-import android.graphics.Color;
+import android.content.pm.PackageManager;
 import android.graphics.PixelFormat;
+import android.media.AudioDeviceCallback;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
+import android.media.AudioRecord;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.RemoteException;
-import android.service.credentials.CreateEntry;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 
+import com.iflytek.aikit.core.AiHelper;
+import com.iflytek.aikit.core.BaseLibrary;
+import com.iflytek.aikit.core.CoreListener;
+import com.iflytek.aikit.core.ErrType;
+import com.iflytek.aikit.core.LogLvl;
 import com.iflytek.cloud.ErrorCode;
 import com.iflytek.cloud.InitListener;
 import com.iflytek.cloud.RecognizerListener;
 import com.iflytek.cloud.RecognizerResult;
 import com.iflytek.cloud.SpeechConstant;
 import com.iflytek.cloud.SpeechError;
-import com.iflytek.cloud.SpeechEvent;
 import com.iflytek.cloud.SpeechRecognizer;
 import com.iflytek.cloud.SpeechSynthesizer;
 import com.iflytek.cloud.SpeechUtility;
 import com.iflytek.cloud.SynthesizerListener;
-import com.iflytek.cloud.VoiceWakeuper;
-import com.iflytek.cloud.WakeuperListener;
-import com.iflytek.cloud.WakeuperResult;
-import com.iflytek.cloud.util.ResourceUtil;
 
-import com.yl.creteEntity.crete.roomCrete.entity.creteEntity;
 import com.yl.creteEntity.crete.roomCrete.entity.roomDIal;
 import com.yl.ylvoicewakeup.R;
 import com.yl.ylvoicewakeup.creteVoice.CreateLogotype;
 import com.yl.ylvoicewakeup.creteVoice.QueryFeatureList;
 import com.yl.ylvoicewakeup.creteVoice.SearchFeature;
 import com.yl.ylvoicewakeup.creteVoice.SearchOneFeature;
+import com.yl.ylvoicewakeup.model.AsrModel;
 import com.yl.ylvoicewakeup.utils.AnimatorUtil;
+import com.yl.ylvoicewakeup.utils.AudioTrackManager;
 import com.yl.ylvoicewakeup.utils.CommonUtil;
 import com.yl.ylvoicewakeup.utils.CreteUtlis;
+import com.yl.ylvoicewakeup.utils.FileUtils;
 import com.yl.ylvoicewakeup.utils.JsonParser;
 import com.yl.ylvoicewakeup.utils.PcmUtils;
 import com.yl.ylvoicewakeup.utils.SystemPropertiesReflection;
 import com.yl.ylvoicewakeup.utils.TenSecondsOfAudio;
+import com.yl.ylvoicewakeup.utils.XunFeiAsr;
+import com.yl.ylvoicewakeup.utils.XunFeiXTTS;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -73,20 +89,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class VoiceWakeupService extends Service {
 
-    private int curThresh = 1450;
-    // 语音唤醒对象
-    private VoiceWakeuper mIvw;
     private SpeechRecognizer mIat;// 语音听写对象
-    private SpeechSynthesizer mTts;
-    private String keep_alive = "1";
-    private String ivwNetMode = "0";
-    private final String APP_ID = "c7af7320";
     private String mEngineType = SpeechConstant.TYPE_CLOUD;// 引擎类型
     private WindowManager mWindowManager;
     private WindowManager.LayoutParams wmParams;
     private View mFloatingLayout;
     private ImageView voiceImg;
     private TextView voiceText;
+    private View floatingView;
+    //用来判断是否要隐藏窗口
     private boolean isHideView = false;
     private String resultType = "json";//结果内容数据格式
     private String language = "zh_cn";//识别语言
@@ -121,26 +132,35 @@ public class VoiceWakeupService extends Service {
     List<String> featureIdList = new ArrayList<>();//特征唯一标识
     List<String> featureInfoList = new ArrayList<>();//特征描述
     public boolean fig = true;//返回判断是否注册声纹结果
-    private boolean mttsFig = false;
     private roomDIal roomDIal;
     public TenSecondsOfAudio tenSecondsOfAudio;
     public PcmUtils pcmUtils;
     public ServiceConnection mConnection;
-
+    private String APPID;
+    private String APIKEY;
+    private String APISECRET;
+    private String WORK_DIR;
+    private String RES_DIR;
+    private int authResult = -1;
+    private XunFeiAsr xunFeiAsr;
+    private XunFeiXTTS xunFeiXTTS;
+    private final String[] selectionText = {"第一个", "第二个", "第三个", "第四个", "第五个", "第六个", "最后一个", "暂停"};
+    private AudioManager audioManager;
+    private boolean isMusicPlaying = false;
+    //用来区分开始命令字识别还是在线识别
+    private boolean isOnlineRecognize = false;
 
     @Override
     public void onCreate() {
         super.onCreate();
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        registerBroadcast();
         //  开放平台注册的APPID
         SpeechUtility.createUtility(getApplication(), SpeechConstant.APPID + "=c7af7320");
-        // 初始化唤醒对象
-        mIvw = VoiceWakeuper.createWakeuper(this, null);
         mIat = SpeechRecognizer.createRecognizer(this, mInitListener);
-        mTts = SpeechSynthesizer.createSynthesizer(this, mInitListener);
         mSharedPreferences = getSharedPreferences("ASR", Activity.MODE_PRIVATE);
         animatorUtil = new AnimatorUtil();
-        mHandler = new Handler(Looper.getMainLooper());
-        mConnection  = new ServiceConnection() {
+        mConnection = new ServiceConnection() {
             @Override
             public void onServiceConnected(ComponentName name, IBinder service) {
                 roomDIal = com.yl.creteEntity.crete.roomCrete.entity.roomDIal.Stub.asInterface(service);
@@ -162,84 +182,277 @@ public class VoiceWakeupService extends Service {
         tenSecondsOfAudio = new TenSecondsOfAudio(VoiceWakeupService.this);
         tenSecondsOfAudio.startRecording();
         pcmUtils = new PcmUtils();
-        Log.d(TAG, "onCreate: "+mConnection);
+        mHandler = new Handler(Looper.getMainLooper());
         initWindow();
-    }
-
-    private void initWindow() {
-        //初始话声纹识别必须参数
-        CreateAPP_ID = "27b3a946";
-        CreateAPISecret = "MGNhOTM2Yjg3MmVhMTFjYzhhODQzMTYw";
-        CreateAPIKey = "06224092793087296b1f47c96e0133bc";
-        CreateRequestUrl = "https://api.xf-yun.com/v1/private/s782b4996";
-        mWindowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
-        wmParams = new WindowManager.LayoutParams();
-        wmParams.type = WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY;
-
-        wmParams.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR |
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH;
-
-        wmParams.format = PixelFormat.TRANSLUCENT;
-        wmParams.gravity = Gravity.START | Gravity.TOP;
-        wmParams.x = 100;
-        wmParams.y = 50;
-        wmParams.width = WindowManager.LayoutParams.WRAP_CONTENT;
-        wmParams.height = WindowManager.LayoutParams.WRAP_CONTENT;
-    }
-
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
         initXunFei();
-        return START_STICKY;
+        initInfo();
+        initSDK();
+        xunFeiAsr = new XunFeiAsr(getApplication(), resultCallBack);
+        xunFeiXTTS = new XunFeiXTTS();
+        judgeRecognizeAndStart();
+        startMonitoring();
     }
 
-    @Nullable
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
+    private void initInfo() {
+        APPID = getResources().getString(R.string.appId);
+        APIKEY = getResources().getString(R.string.apiKey);
+        APISECRET = getResources().getString(R.string.apiSecret);
+        WORK_DIR = getResources().getString(R.string.workDir);
+        File file = new File(WORK_DIR);
+        if (!file.exists()) {
+            file.mkdir();
+        }
+        RES_DIR = WORK_DIR + "ivw";
+        File file1 = new File(RES_DIR);
+        if (!file1.exists()) {
+            file1.mkdir();
+        }
+        FileUtils.copyAssetsToSDCard(this, "resource", WORK_DIR);
     }
 
-    private WakeuperListener mWakeuperListener = new WakeuperListener() {
+    private XunFeiAsr.ResultCallBack resultCallBack = new XunFeiAsr.ResultCallBack() {
+        @Override
+        public String onResultAction(String result) {
+            if (isOnlineRecognize) {
+                mHandler.removeCallbacks(exitWindowRunnable);
+                return "true;200";
+            }
+            Log.e(TAG, "onResultAction: " + result);
+            xunFeiAsr.endRecognize();
+            mHandler.removeCallbacks(exitWindowRunnable);
+            StringBuilder isNeedToStart = new StringBuilder("true;");
+            if ("com.yl.deepseekxunfei".equals(CommonUtil.getForegroundActivity(getApplicationContext()))) {
+                if (Arrays.asList(selectionText).contains(result)) {
+                    sendBroadCast("com.yl.voice.commit.text", "text", result);
+                }
+            } else {
+                if (result.equals("你好小天")) {
+                    wakeupAction();
+                    isNeedToStart.append("100");
+                } else if (result.equals("回到桌面") || result.equals("回到首页")
+                        || result.equals("打开桌面") || result.equals("打开首页")) {
+                    goToHome();
+                    isNeedToStart.append("200");
+                } else if (result.equals("打开导航") || result.equals("打开地图") || result.equals("回到地图") || result.equals("回到导航")) {
+                    openAmap();
+                    isNeedToStart.append("200");
+                } else if (result.equals("打开酷我音乐") || result.equals("回到酷我音乐")) {
+                    openKuwo();
+                    isNeedToStart.append("200");
+                } else if (result.equals("上一首")) {
+                    inputKeyEvent(KeyEvent.KEYCODE_MEDIA_PREVIOUS);
+                    isNeedToStart.append("200");
+                } else if (result.equals("下一首")) {
+                    inputKeyEvent(KeyEvent.KEYCODE_MEDIA_NEXT);
+                    isNeedToStart.append("200");
+                } else if (result.equals("暂停播放")) {
+                    if (isMusicPlaying) {
+                        inputKeyEvent(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+                    }
+                    isNeedToStart.append("200");
+                } else if (result.equals("继续播放")) {
+                    if (!isMusicPlaying) {
+                        inputKeyEvent(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+                    }
+                    isNeedToStart.append("200");
+                }
+            }
+            return isNeedToStart.toString();
+        }
 
         @Override
-        public void onResult(WakeuperResult result) {
-            if (!"1".equalsIgnoreCase(keep_alive)) {
+        public void onResultText(String text, boolean isEnd) {
+            if (isOnlineRecognize) {
+                mHandler.removeCallbacks(exitWindowRunnable);
+                return;
+            }
+            mHandler.removeCallbacks(exitWindowRunnable);
+            mHandler.postDelayed(exitWindowRunnable, 7000);
+            if (mWindowManager != null) {
+                if (voiceImg != null) {
+                    if (voiceImg.isAttachedToWindow()) {
+                        mHandler.post(() -> {
+                            voiceText.setText(text);
+                            if (isEnd) {
+                                if (!text.equals("你好小天")) {
+                                    AudioTrackManager.getInstance().stopPlay();
+                                    xunFeiXTTS.startTTS("好的");
+                                    mHandler.postDelayed(() -> {
+                                        mWindowManager.removeView(floatingView);
+                                    }, 500);
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    };
 
+    public void openAmap() {
+        // 检查高德地图是否安装
+        PackageManager packageManager = getPackageManager();
+        try {
+            packageManager.getPackageInfo("com.autonavi.amapauto", 0);
+
+            // 构建高德地图的URI
+            Intent intent = new Intent();
+            intent.setComponent(new ComponentName("com.autonavi.amapauto", "com.autonavi.amapauto.MainMapActivity"));
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            // 启动高德地图应用
+            startActivity(intent);
+        } catch (PackageManager.NameNotFoundException e) {
+            // 未安装高德地图，提示用户安装
+            e.printStackTrace();
+        }
+    }
+
+    public void openKuwo() {
+        // 检查高德地图是否安装
+        PackageManager packageManager = getPackageManager();
+        try {
+            packageManager.getPackageInfo("cn.kuwo.kwmusiccar", 0);
+
+            // 构建高德地图的URI
+            Intent intent = new Intent();
+            intent.setComponent(new ComponentName("cn.kuwo.kwmusiccar", "cn.kuwo.kwmusiccar.ui.MainActivity"));
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            // 启动高德地图应用
+            startActivity(intent);
+        } catch (PackageManager.NameNotFoundException e) {
+            // 未安装高德地图，提示用户安装
+            e.printStackTrace();
+        }
+    }
+
+    private void goToHome() {
+        Intent home = new Intent(Intent.ACTION_MAIN);
+        home.setComponent(new ComponentName("com.yl.yldesktop", "com.yl.yldesktop.activity.MainActivity"));
+        home.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(home);
+    }
+
+    private void initSDK() {
+        AiHelper.getInst().setLogInfo(LogLvl.VERBOSE, 1, "/sdcard/iflytek/aikit/aeeLog.txt");
+        AiHelper.getInst().setLogMode(2); //可将日志打印到文件中，发送到工单
+        AudioTrackManager.getInstance().setSpeakCallBack(speakCallBack);
+        //设定初始化参数
+        //能力id列表 唤醒：e867a88f2  合成e2e44feff  命令词e75f07b62  合成轻量版ece9d3c90
+        BaseLibrary.Params params = BaseLibrary.Params.builder()
+                .appId(APPID)  //您的应用ID，可从控制台查看
+                .apiKey(APIKEY) //您的APIKEY，可从控制台查看
+                .apiSecret(APISECRET) //您的APISECRET，可从控制台查看
+                .workDir(WORK_DIR) //SDK的工作目录，需要确保有读写权限。一般用于存放离线能力资源，日志存放目录等使用。
+                .ability("e75f07b62;e2e44feff") //初始化时使用几个能力就填几个能力的id，以;分开，如：使用唤醒+合成填入"e867a88f2;e2e44feff"
+                .build();
+        //初始化SDK
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                AiHelper.getInst().initEntry(getApplicationContext(), params);
             }
-            try {
-                String text = result.getResultString();
-                JSONObject object;
-                object = new JSONObject(text);
-                StringBuffer buffer = new StringBuffer();
-                buffer.append("【RAW】 " + text);
-                buffer.append("\n");
-                buffer.append("【操作类型】" + object.optString("sst"));
-                buffer.append("\n");
-                buffer.append("【唤醒词id】" + object.optString("id"));
-                buffer.append("\n");
-                buffer.append("【得分】" + object.optString("score"));
-                buffer.append("\n");
-                buffer.append("【前端点】" + object.optString("bos"));
-                buffer.append("\n");
-                buffer.append("【尾端点】" + object.optString("eos"));
-                resultString = buffer.toString();
-            } catch (JSONException e) {
-                resultString = "结果解析出错";
-                e.printStackTrace();
-            }
-            Log.e(TAG, "onResult: " + resultString);
-            if ("com.yl.deepseekxunfei".equals(CommonUtil.getForegroundActivity(getApplicationContext()))) {
-                sendBroadCast(ACTION);
+        }).start();
+        AiHelper.getInst().registerListener(coreListener);// 注册SDK 初始化状态监听
+    }
+
+    private AudioTrackManager.SpeakCallBack speakCallBack = new AudioTrackManager.SpeakCallBack() {
+        @Override
+        public void onSpeakEnd() {
+            mHandler.post(() -> {
+                animatorUtil.stopJumpAnimation(voiceImg);
+            });
+            if (isHideView) {
+                mHandler.postDelayed(() -> {
+                    if (mWindowManager != null) {
+                        if (mFloatingLayout != null && floatingView.isAttachedToWindow()) {
+                            mWindowManager.removeView(floatingView);
+                        }
+                    }
+                }, 1000);
+                isHideView = false;
             } else {
-                mttsFig = false;
-                mTts.startSpeaking("我在，请问有什么吩咐", mSynthesizerListener);
-                LayoutInflater inflater = LayoutInflater.from(getApplicationContext());
-                mFloatingLayout = inflater.inflate(R.layout.voice_layout, null);
-                mFloatingLayout.setBackgroundResource(R.drawable.voice_bg);
-                voiceImg = mFloatingLayout.findViewById(R.id.voice_img);
-                voiceText = mFloatingLayout.findViewById(R.id.voice_text);
-                mWindowManager.addView(mFloatingLayout, wmParams);
+                if (isNetSystemUsable()) {
+                    //开始识别，并设置监听器
+                    mIat.startListening(mRecogListener);
+                }
+            }
+        }
+
+        @Override
+        public void onSpeakStart() {
+            animatorUtil.startJumpAnimation(voiceImg);
+        }
+    };
+
+    //授权结果回调
+    private CoreListener coreListener = new CoreListener() {
+        @Override
+        public void onAuthStateChange(final ErrType type, final int code) {
+            Log.i(TAG, "core listener code:" + code);
+            switch (type) {
+                case AUTH:
+                    authResult = code;
+                    if (code == 0) {
+                        Log.e(TAG, "SDK授权成功");
+                        xunFeiAsr.initAsr();
+                        xunFeiXTTS.init(getApplicationContext());
+                        mHandler.postDelayed(() -> {
+                            xunFeiAsr.startRecognize();
+                        }, 2000);
+                    } else {
+                        Log.e(TAG, "SDK授权失败，授权码为:" + authResult);
+                        initSDK();
+                    }
+                    break;
+                case HTTP:
+                    Toast.makeText(getBaseContext(), "SDK状态：HTTP认证结果" + code,
+                            Toast.LENGTH_SHORT).show();
+                    break;
+                default:
+                    Toast.makeText(getBaseContext(), "SDK状态：其他错误" + code,
+                            Toast.LENGTH_SHORT).show();
+            }
+        }
+    };
+
+    private void registerBroadcast() {
+        IntentFilter intentFilter = new IntentFilter();
+        intentFilter.addAction("com.yl.start.voice");
+        registerReceiver(new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                toggleWakeup();
+            }
+        }, intentFilter);
+    }
+
+    private void toggleWakeup() {
+        //如果语音悬浮窗已经拉起，则remove它，若无，则拉起语音悬浮窗
+        if (mFloatingLayout != null && mWindowManager != null) {
+            if (!floatingView.isAttachedToWindow()) {
+                wakeupAction();
+            }
+//            else {
+//                mWindowManager.removeView(floatingView);
+//            }
+        }
+    }
+
+    public void wakeupAction() {
+        if ("com.yl.deepseekxunfei".equals(CommonUtil.getForegroundActivity(getApplicationContext()))) {
+            sendBroadCast(ACTION);
+        } else {
+            xunFeiXTTS.stopTTS();
+            mHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    voiceText.setText("你好");
+                    xunFeiXTTS.startTTS("你好");
+                    if (!floatingView.isAttachedToWindow()) {
+                        showFloatingWindow();
+                    }
+                }
+            });
 //                Log.d(TAG, "onCreate: "+mConnection);
 //                if (roomDIal != null) {
 //                    try {
@@ -306,35 +519,130 @@ public class VoiceWakeupService extends Service {
 //                } else {
 //                    Log.d(TAG, "roomDIal: " + roomDIal);
 //                }
+        }
+    }
+
+    Runnable exitWindowRunnable = new Runnable() {
+        @Override
+        public void run() {
+//            if (!isNetSystemUsable()){
+            if (mFloatingLayout != null && floatingView.isAttachedToWindow()) {
+                voiceText.setText("未识别到您说话，请稍后再试");
+                xunFeiXTTS.startTTS("未识别到您说话，请稍后再试");
+                mWindowManager.removeView(floatingView);
             }
-        }
-
-        @Override
-        public void onError(SpeechError error) {
-            showTip(error.getPlainDescription(true));
-
-        }
-
-        @Override
-        public void onBeginOfSpeech() {
-        }
-
-        @Override
-        public void onEvent(int eventType, int isLast, int arg2, Bundle obj) {
-            switch (eventType) {
-                // EVENT_RECORD_DATA 事件仅在 NOTIFY_RECORD_DATA 参数值为 真 时返回
-                case SpeechEvent.EVENT_RECORD_DATA:
-                    final byte[] audio = obj.getByteArray(SpeechEvent.KEY_EVENT_RECORD_DATA);
-                    Log.i(TAG, "ivw audio length: " + audio.length);
-                    break;
-            }
-        }
-
-        @Override
-        public void onVolumeChanged(int volume) {
-
+//            } else {
+//                isHideView = true;
+//            }
         }
     };
+
+    private void initWindow() {
+        //初始话声纹识别必须参数
+        CreateAPP_ID = "27b3a946";
+        CreateAPISecret = "MGNhOTM2Yjg3MmVhMTFjYzhhODQzMTYw";
+        CreateAPIKey = "06224092793087296b1f47c96e0133bc";
+        CreateRequestUrl = "https://api.xf-yun.com/v1/private/s782b4996";
+        mWindowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        wmParams = new WindowManager.LayoutParams();
+        wmParams.type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY :
+                WindowManager.LayoutParams.TYPE_PHONE;
+
+        // 设置全屏标志
+        wmParams.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                WindowManager.LayoutParams.FLAG_FULLSCREEN |
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+
+        wmParams.format = PixelFormat.TRANSLUCENT;
+        wmParams.gravity = Gravity.START | Gravity.TOP;
+        wmParams.x = 120;
+        wmParams.y = 50;
+        wmParams.width = WindowManager.LayoutParams.MATCH_PARENT;
+        wmParams.height = WindowManager.LayoutParams.MATCH_PARENT;
+        // 创建全屏透明背景
+        floatingView = new FrameLayout(this);
+        floatingView.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        floatingView.setBackgroundColor(0x00000000); // 完全透明
+        floatingView.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                // 检查点击是否在内容视图外部
+                if (!isPointInsideView(event.getRawX(), event.getRawY(), mFloatingLayout)) {
+                    closeFloatingWindow();
+                    return true;
+                }
+            }
+            return false;
+        });
+        LayoutInflater inflater = LayoutInflater.from(getApplicationContext());
+        mFloatingLayout = inflater.inflate(R.layout.voice_layout, null);
+        mFloatingLayout.setLayoutParams(new ViewGroup.LayoutParams(250, 100));
+        mFloatingLayout.setBackgroundResource(R.drawable.voice_bg);
+        voiceImg = mFloatingLayout.findViewById(R.id.voice_img);
+        voiceText = mFloatingLayout.findViewById(R.id.voice_text);
+    }
+
+    // 显示悬浮窗
+    private void showFloatingWindow() {
+        try {
+            ((FrameLayout) floatingView).removeView(mFloatingLayout);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        // 将内容视图添加到全屏背景
+        ((FrameLayout) floatingView).addView(mFloatingLayout);
+
+        // 设置内容视图位置（居中）
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) mFloatingLayout.getLayoutParams();
+        mFloatingLayout.setLayoutParams(params);
+
+        // 添加窗口到WindowManager
+        mWindowManager.addView(floatingView, wmParams);
+    }
+
+    // 关闭悬浮窗
+    private void closeFloatingWindow() {
+        if (mWindowManager != null && floatingView != null) {
+            if (floatingView.isAttachedToWindow()) {
+                mWindowManager.removeView(floatingView);
+            }
+        }
+        if (xunFeiXTTS != null) {
+            xunFeiXTTS.stopTTS();
+        }
+        if (mIat != null) {
+            if (mIat.isListening()) {
+                mIat.stopListening();
+                mIat.cancel();
+            }
+        }
+    }
+
+    // 检查点是否在视图内
+    private boolean isPointInsideView(float x, float y, View view) {
+        int[] location = new int[2];
+        view.getLocationOnScreen(location);
+
+        int viewX = location[0];
+        int viewY = location[1];
+
+        return (x >= viewX && x <= (viewX + view.getWidth()) &&
+                (y >= viewY && y <= (viewY + view.getHeight())));
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        return START_STICKY;
+    }
+
+    @Nullable
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
 
     private void showTip(String text) {
         Toast.makeText(this, text, Toast.LENGTH_SHORT).show();
@@ -345,13 +653,8 @@ public class VoiceWakeupService extends Service {
      */
     @Override
     public void onDestroy() {
-        if (mIvw != null) {
-            mIvw.cancel();
-            mIvw.destroy();
-        }
         unbindService(mConnection);
         super.onDestroy();
-
     }
 
     private void initXunFei() {
@@ -383,113 +686,7 @@ public class VoiceWakeupService extends Service {
 
         // 设置标点符号,设置为"0"返回结果无标点,设置为"1"返回结果有标点
         mIat.setParameter(SpeechConstant.ASR_PTT, mSharedPreferences.getString("iat_punc_preference", "1"));
-        mIvw = VoiceWakeuper.getWakeuper();
-        if (mIvw != null) {
-            // 清空参数
-            mIvw.setParameter(SpeechConstant.PARAMS, null);
-            // 唤醒门限值，根据资源携带的唤醒词个数按照“id:门限;id:门限”的格式传入
-            mIvw.setParameter(SpeechConstant.IVW_THRESHOLD, "0:" + curThresh);
-            // 设置唤醒模式
-            mIvw.setParameter(SpeechConstant.IVW_SST, "wakeup");
-            // 设置持续进行唤醒
-            mIvw.setParameter(SpeechConstant.KEEP_ALIVE, keep_alive);
-            // 设置闭环优化网络模式
-            mIvw.setParameter(SpeechConstant.IVW_NET_MODE, ivwNetMode);
-            // 设置唤醒资源路径
-            mIvw.setParameter(SpeechConstant.IVW_RES_PATH, getResource());
-            // 设置唤醒录音保存路径，保存最近一分钟的音频
-            String ivwPath = getExternalFilesDir("msc").getAbsolutePath() + "/ivw.wav";
-            Log.d("IVW_PATH", "唤醒音频保存路径: " + ivwPath);
-            mIvw.setParameter(SpeechConstant.IVW_AUDIO_PATH, ivwPath);
-            mIvw.setParameter(SpeechConstant.AUDIO_FORMAT, "wav");
-            // 如有需要，设置 NOTIFY_RECORD_DATA 以实时通过 onEvent 返回录音音频流字节
-            //mIvw.setParameter( SpeechConstant.NOTIFY_RECORD_DATA, "1" );
-            // 启动唤醒
-            /*	mIvw.setParameter(SpeechConstant.AUDIO_SOURCE, "-1");*/
-
-            mIvw.startListening(mWakeuperListener);
-        } else {
-            showTip("唤醒未初始化");
-        }
-        String deepseekVoiceSpeed = SystemPropertiesReflection.get("deepseek_voice_speed", "50");
-        String deepseekVoicespeaker = SystemPropertiesReflection.get("deepseek_voice_speaker", "aisjiuxu");
-        if (deepseekVoicespeaker.equals("许久")) {
-            deepseekVoicespeaker = "aisjiuxu";
-        } else if (deepseekVoicespeaker.equals("小萍")) {
-            deepseekVoicespeaker = "aisxping";
-        } else if (deepseekVoicespeaker.equals("小婧")) {
-            deepseekVoicespeaker = "aisjinger";
-        } else if (deepseekVoicespeaker.equals("许小宝")) {
-            deepseekVoicespeaker = "aisbabyxu";
-        } else if (deepseekVoicespeaker.equals("小燕")) {
-            deepseekVoicespeaker = "xiaoyan";
-        }
-
-        String deepseekFontSize = SystemPropertiesReflection.get("deepseek_font_size", "20dp");
-        String deepseekFontColor = SystemPropertiesReflection.get("deepseek_font_color", "黑色");
-        String deepseekBackgroundColor = SystemPropertiesReflection.get("deepseek_background_color", "白色");
-
-        mTts.setParameter(SpeechConstant.PARAMS, null);
-        mTts.setParameter(SpeechConstant.ENGINE_TYPE, SpeechConstant.TYPE_CLOUD); //设置云端
-        mTts.setParameter(SpeechConstant.VOICE_NAME, deepseekVoicespeaker);//设置发音人
-        mTts.setParameter(SpeechConstant.SPEED, deepseekVoiceSpeed);//设置语速
-        //设置合成音调
-        mTts.setParameter(SpeechConstant.PITCH, "50");//设置音高
-        mTts.setParameter(SpeechConstant.VOLUME, "100");//设置音量，范围0~100
-        mTts.setParameter(SpeechConstant.STREAM_TYPE, "3");
-        // 设置播放合成音频打断音乐播放，默认为true
-        mTts.setParameter(SpeechConstant.KEY_REQUEST_FOCUS, "true");
     }
-
-    private final SynthesizerListener mSynthesizerListener = new SynthesizerListener() {
-        @Override
-        public void onSpeakBegin() {
-            animatorUtil.startJumpAnimation(voiceImg);
-        }
-
-        @Override
-        public void onBufferProgress(int i, int i1, int i2, String s) {
-
-        }
-
-        @Override
-        public void onSpeakPaused() {
-
-        }
-
-        @Override
-        public void onSpeakResumed() {
-
-        }
-
-        @Override
-        public void onSpeakProgress(int i, int i1, int i2) {
-
-        }
-
-        @Override
-        public void onCompleted(SpeechError speechError) {
-            animatorUtil.stopJumpAnimation(voiceImg);
-            if (isHideView) {
-                mHandler.postDelayed(() -> {
-                    if (mWindowManager != null) {
-                        if (mFloatingLayout != null) {
-                            mWindowManager.removeView(mFloatingLayout);
-                        }
-                    }
-                }, 1000);
-                isHideView = false;
-            } else {
-                //开始识别，并设置监听器
-                mIat.startListening(mRecogListener);
-            }
-        }
-
-        @Override
-        public void onEvent(int i, int i1, int i2, Bundle bundle) {
-
-        }
-    };
 
     private final RecognizerListener mRecogListener = new RecognizerListener() {
         @Override
@@ -513,6 +710,7 @@ public class VoiceWakeupService extends Service {
             Log.e(TAG, "onResult: " + isLast + ":: result: " + result);
             if (isLast) {
                 if (!TextUtils.isEmpty(result) && !"。".equals(result)) {
+                    voiceText.setText(result);
                     Intent intent = new Intent();
                     SystemPropertiesReflection.set("persist.sys.yl.text", result);
                     intent.setComponent(new ComponentName("com.yl.deepseekxunfei", "com.yl.deepseekxunfei.MainActivity"));
@@ -520,25 +718,24 @@ public class VoiceWakeupService extends Service {
                     startActivity(intent);
                     if (mWindowManager != null) {
                         if (mFloatingLayout != null) {
-                            mWindowManager.removeView(mFloatingLayout);
+                            if (floatingView.isAttachedToWindow()) {
+                                mWindowManager.removeView(floatingView);
+                            }
                         }
                     }
                 } else {
-                    if (!mttsFig) {
+                    //如果窗口拉起来了才会进行播报和文字显示
+                    if (mFloatingLayout != null && mFloatingLayout.isAttachedToWindow()) {
                         voiceText.setText("未识别到文字，请稍后尝试");
-                        mTts.startSpeaking("未识别到文字，请稍后尝试", mSynthesizerListener);
+                        xunFeiXTTS.startTTS("未识别到文字，请稍后尝试");
                         isHideView = true;
-                    } else {
-                        // 延迟3秒后移除悬浮窗
-                        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
-                            @Override
-                            public void run() {
-                                if (mFloatingLayout != null && mFloatingLayout.isAttachedToWindow()) {
-                                    mWindowManager.removeView(mFloatingLayout);
-                                }
-                            }
-                        }, 3000);
-                        isHideView = true;
+                    }
+                }
+                isOnlineRecognize = false;
+            } else {
+                if (!TextUtils.isEmpty(result) && !"。".equals(result)) {
+                    if (mFloatingLayout != null && mFloatingLayout.isAttachedToWindow()) {
+                        voiceText.setText(result);
                     }
                 }
             }
@@ -546,8 +743,8 @@ public class VoiceWakeupService extends Service {
 
         @Override
         public void onError(SpeechError speechError) {
-            mTts.stopSpeaking();
-            mTts.startSpeaking(speechError.getErrorDescription(), mSynthesizerListener);
+            xunFeiXTTS.stopTTS();
+            xunFeiXTTS.startTTS(speechError.getErrorDescription());
             voiceText.setText(speechError.getErrorDescription());
             isHideView = true;
             Log.e(TAG, "onError: " + speechError.getErrorDescription());
@@ -559,8 +756,13 @@ public class VoiceWakeupService extends Service {
         }
     };
 
-    public void sendBroadCast(String action) {
+    public void sendBroadCast(String action, String... extra) {
         Intent broadcastIntent = new Intent(action);
+        if (extra.length % 2 == 0) {
+            for (int i = 0; i < extra.length; i = i + 2) {
+                broadcastIntent.putExtra(extra[i], extra[i + 1]);
+            }
+        }
         sendBroadcast(broadcastIntent);
     }
 
@@ -609,17 +811,11 @@ public class VoiceWakeupService extends Service {
         }
     };
 
-    private String getResource() {
-        final String resPath = ResourceUtil.generateResourcePath(this, ResourceUtil.RESOURCE_TYPE.assets, "ivw/" + APP_ID + ".jet");
-        Log.d(TAG, "resPath: " + resPath);
-        return resPath;
-    }
-
     //判断是否已注册声纹
     public boolean createFig() {
         if (createLogotype.getGroupId() != null) {
-            Log.d(TAG, "roomDial: "+createLogotype.getGroupId().size());
-            Log.d(TAG, "roomDial: "+createLogotype.getGroupId());
+            Log.d(TAG, "roomDial: " + createLogotype.getGroupId().size());
+            Log.d(TAG, "roomDial: " + createLogotype.getGroupId());
             if (createLogotype.getGroupId().size() > 1) {
                 for (int j = 0; j < createLogotype.getGroupId().size(); j++) {
                     result[0] = SearchFeature.doSearchFeature(CreateRequestUrl, CreateAPP_ID, CreateAPISecret, CreateAPIKey, contrastFies, createLogotype, createLogotype.getGroupId().get(j));//1:N比对
@@ -658,6 +854,28 @@ public class VoiceWakeupService extends Service {
         }
         createLogotype.clear();
         return fig;
+    }
+
+
+    /**
+     * 判断当前网络是否可用(6.0以上版本)
+     * 实时
+     *
+     * @return
+     */
+    private boolean isNetSystemUsable() {
+        boolean isNetUsable = false;
+        ConnectivityManager manager = (ConnectivityManager)
+                getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            NetworkCapabilities networkCapabilities =
+                    manager.getNetworkCapabilities(manager.getActiveNetwork());
+            if (networkCapabilities != null) {
+                isNetUsable = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+            }
+        }
+        Log.e(TAG, "isNetSystemUsable: " + isNetUsable);
+        return isNetUsable;
     }
 
     public boolean seleteCrete() {
@@ -706,4 +924,74 @@ public class VoiceWakeupService extends Service {
             return false;
         }
     }
+
+
+    private void judgeRecognizeAndStart() {
+        mHandler.postDelayed(RecognizeRunnable, 1000);
+    }
+
+    private final int NO_SPEED_TIME_THREESHOLDER = 5;
+    private int countTime = NO_SPEED_TIME_THREESHOLDER;
+
+    Runnable RecognizeRunnable = new Runnable() {
+        @Override
+        public void run() {
+            AsrModel lastAsrModel = xunFeiAsr.getLastAsrModel();
+            if (lastAsrModel != null) {
+                if (lastAsrModel.isEnd()) {
+                    countTime = NO_SPEED_TIME_THREESHOLDER;
+                } else {
+                    if (countTime <= 0) {
+                        xunFeiAsr.end("true;1000");
+                        countTime = NO_SPEED_TIME_THREESHOLDER;
+                    } else {
+                        countTime--;
+                    }
+                }
+            }
+//            Log.e(TAG, "run: " + xunFeiAsr.isIsRecognize());
+            mHandler.postDelayed(this, 1000);
+        }
+    };
+
+    public static void inputKeyEvent(int key) {
+        try {
+            String keyCommand = "input keyevent = " + key;
+            Runtime runtime = Runtime.getRuntime();
+            runtime.exec(keyCommand);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void startMonitoring() {
+        audioManager.registerAudioDeviceCallback(new AudioDeviceCallback() {
+            @Override
+            public void onAudioDevicesAdded(AudioDeviceInfo[] addedDevices) {
+                checkMusicState();
+            }
+
+            @Override
+            public void onAudioDevicesRemoved(AudioDeviceInfo[] removedDevices) {
+                checkMusicState();
+            }
+        }, mHandler);
+
+        // 定期检查音乐状态
+        mHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                checkMusicState();
+                mHandler.postDelayed(this, 1000);
+            }
+        }, 1000);
+    }
+
+    private void checkMusicState() {
+        boolean newState = audioManager.isMusicActive();
+        if (newState != isMusicPlaying) {
+            isMusicPlaying = newState;
+        }
+    }
+
 }

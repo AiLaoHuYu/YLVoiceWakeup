@@ -11,9 +11,9 @@
       "type": "SINGLE",
       "filters": [],
       "attributes": [],
-      "versionCode": 1,
-      "versionName": "1.0",
-      "outputFile": "YLVoiceWakeup_release_1.0_202505191628.apk"
+      "versionCode": 2,
+      "versionName": "1.1",
+      "outputFile": "YLVoiceWakeup_release_1.1_202506061822.apk"
     }
   ],
   "elementType": "File",
@@ -22,14 +22,14 @@
       "minApi": 28,
       "maxApi": 30,
       "baselineProfiles": [
-        "baselineProfiles/1/YLVoiceWakeup_release_1.0_202505191628.dm"
+        "baselineProfiles/1/YLVoiceWakeup_release_1.1_202506061822.dm"
       ]
     },
     {
       "minApi": 31,
       "maxApi": 2147483647,
       "baselineProfiles": [
-        "baselineProfiles/0/YLVoiceWakeup_release_1.0_202505191628.dm"
+        "baselineProfiles/0/YLVoiceWakeup_release_1.1_202506061822.dm"
       ]
     }
   ],
