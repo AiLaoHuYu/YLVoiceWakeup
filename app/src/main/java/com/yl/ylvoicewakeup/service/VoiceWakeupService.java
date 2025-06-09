@@ -71,6 +71,7 @@ import com.yl.ylvoicewakeup.utils.JsonParser;
 import com.yl.ylvoicewakeup.utils.PcmUtils;
 import com.yl.ylvoicewakeup.utils.SystemPropertiesReflection;
 import com.yl.ylvoicewakeup.utils.TenSecondsOfAudio;
+import com.yl.ylvoicewakeup.utils.ToastUtil;
 import com.yl.ylvoicewakeup.utils.XunFeiAsr;
 import com.yl.ylvoicewakeup.utils.XunFeiXTTS;
 
@@ -149,6 +150,8 @@ public class VoiceWakeupService extends Service {
     private boolean isMusicPlaying = false;
     //用来区分开始命令字识别还是在线识别
     private boolean isOnlineRecognize = false;
+    //是否授权成功
+    private boolean isAuth = false;
 
     @Override
     public void onCreate() {
@@ -399,9 +402,11 @@ public class VoiceWakeupService extends Service {
                         mHandler.postDelayed(() -> {
                             xunFeiAsr.startRecognize();
                         }, 2000);
+                        isAuth = true;
                     } else {
                         Log.e(TAG, "SDK授权失败，授权码为:" + authResult);
                         initSDK();
+                        isAuth = false;
                     }
                     break;
                 case HTTP:
@@ -442,6 +447,10 @@ public class VoiceWakeupService extends Service {
         if ("com.yl.deepseekxunfei".equals(CommonUtil.getForegroundActivity(getApplicationContext()))) {
             sendBroadCast(ACTION);
         } else {
+            if (!isAuth) {
+                ToastUtil.showMessage(this, "请先联网激活语音", Toast.LENGTH_LONG);
+                return;
+            }
             xunFeiXTTS.stopTTS();
             mHandler.post(new Runnable() {
                 @Override
